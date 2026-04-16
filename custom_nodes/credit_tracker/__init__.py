@@ -15,4 +15,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "CreditDisplayFromStrings": "Credit Display (from strings)",
 }
 
-__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
+# Tells ComfyUI to serve js/ as static assets so the live-update
+# extension (credit_display.js) loads automatically in the browser.
+WEB_DIRECTORY = "./js"
+
+__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
