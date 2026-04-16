@@ -176,11 +176,15 @@ Official source: <https://docs.comfy.org/tutorials/partner-nodes/pricing>
 ## File structure
 
 ```
-custom/
+custom_fns/                          ← repo root (cloned into ComfyUI/custom_nodes/)
+├── __init__.py                      # ComfyUI entry point — loaded automatically
+├── pyproject.toml                   # pip install support
+├── .gitignore
+├── README.md
 └── custom_nodes/
     └── credit_tracker/
-        ├── __init__.py   # registers nodes with ComfyUI
-        └── nodes.py      # all logic, pricing table, node classes
+        ├── __init__.py              # registers NODE_CLASS_MAPPINGS
+        └── nodes.py                 # pricing table, token formulas, node classes
 ```
 
 ## Portability
@@ -188,14 +192,15 @@ custom/
 The package has **no external dependencies** (pure Python stdlib). To deploy to another ComfyUI instance:
 
 ```bash
-# Option A — rsync
-rsync -avz custom_nodes/credit_tracker/ user@remote:/path/to/ComfyUI/custom_nodes/credit_tracker/
-
-# Option B — git clone on the target machine
+# Option A — git clone directly into custom_nodes/
 cd /path/to/ComfyUI/custom_nodes
-git clone <this-repo-url> credit_tracker
+git clone https://github.com/Av007/custom_fns.git custom_fns
 
-# Option C — ComfyUI Manager → Install via Git URL
+# Option B — ComfyUI Manager → Install via Git URL
+# paste: https://github.com/Av007/custom_fns
+
+# Option C — rsync (if you have a local copy)
+rsync -avz /local/path/custom_fns/ user@remote:/path/to/ComfyUI/custom_nodes/custom_fns/
 ```
 
 The workflow JSON (`projects/seedance.json`) references the node by `type: "CreditDisplay"` which matches the key in `NODE_CLASS_MAPPINGS`. As long as the package is installed, the workflow loads cleanly on any ComfyUI instance.
