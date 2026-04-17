@@ -31,6 +31,9 @@ When you run AI video generation through ComfyUI (Seedance, Kling, Veo, Sora, et
 │  Settings  : 480p 16:9  854×480  5.0s  ×1 run(s)              │
 │  Per run   : 56.78 cr  ($0.27)                                  │
 │  Total     : 56.78 cr  ($0.27)                                  │
+│  Balance   : 1024.00 cr  ($4.85)                                │
+│  After run : 967.22 cr  ($4.58)                                 │
+│  Status    : OK                                                 │
 │  Rate      : 211 cr = $1 USD                                    │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -47,6 +50,9 @@ The text updates **instantly** when you change any dropdown — no need to run t
 | **Settings** | Resolution, aspect ratio, pixel size, duration, number of runs |
 | **Per run** | Cost of a single generation in credits and USD |
 | **Total** | Per run × number of runs |
+| **Balance** | Your current Comfy Credits (fetched from ComfyUI) |
+| **After run** | Credits remaining once this generation is billed |
+| **Status** | `OK` when affordable; `INSUFFICIENT` otherwise |
 | **Rate** | The official conversion rate (211 Comfy Credits = $1 USD) |
 
 > **Comfy Credits** are the in-app currency. You buy them in **Settings → Credits** inside ComfyUI. They never expire if you top up (top-up credits last 1 year).
@@ -107,8 +113,9 @@ Then restart ComfyUI.
 
 - **This is an estimate.** Actual charges may vary slightly, especially for Seedance 1.x models (their exact token formula is not publicly documented).
 - **Actual spend** is always visible after generation in **Settings → Credits → Credit History** inside ComfyUI.
-- The plugin does **not** make any API calls. It calculates everything locally using the published pricing tables.
-- The plugin has **no external dependencies** — it runs on standard Python and works on any operating system.
+- **Balance check** calls the local ComfyUI API (`/api/credits` etc.) on your own machine — it never talks to any third-party server.
+- **Block-on-insufficient** is opt-in. When enabled, the workflow stops before the paid node runs, so no credits are spent on a failed queue.
+- The plugin has **no external dependencies** — pure Python standard library, works on any OS.
 
 ---
 

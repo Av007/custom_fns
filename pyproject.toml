@@ -1,14 +1,16 @@
 [build-system]
 requires = ["setuptools>=68"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "comfyui-credit-tracker"
-version = "0.1.0"
-description = "Pre-flight cost estimator for ComfyUI Partner Nodes (ShowText display)"
+version = "0.2.0"
+description = "Pre-flight cost estimator with live balance check for ComfyUI Partner Nodes"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
+authors = [{ name = "Av007" }]
+urls = { Homepage = "https://github.com/Av007/custom_fns" }
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -4,17 +4,25 @@ CreditDisplay — Pre-flight cost estimator for ComfyUI Partner Nodes.
 Pricing source: https://docs.comfy.org/tutorials/partner-nodes/pricing
 All costs are in **Comfy Credits**. Conversion: 211 credits = 1 USD.
 
-ComfyUI already tracks *actual* spend per generation in Settings → Credits.
-This node gives you an *estimate before queuing* based on known rates.
+ComfyUI tracks *actual* spend in Settings → Credits. This node estimates
+the cost *before* queuing so you can catch expensive configurations early.
+Optionally fetches live account balance and can block execution when funds
+are insufficient.
 
 Install: copy this folder to ComfyUI/custom_nodes/ and restart ComfyUI.
 """
 
-# Official pricing reference — single source of truth for the URL
-PRICING_SOURCE_URL = "https://docs.comfy.org/tutorials/partner-nodes/pricing"
+from __future__ import annotations
 
-# Official conversion rate (as of Apr 2026)
-CREDITS_PER_USD = 211.0
+import json
+import logging
+import urllib.error
+import urllib.request
+
+log = logging.getLogger(__name__)
+
+PRICING_SOURCE_URL = "https://docs.comfy.org/tutorials/partner-nodes/pricing"
+CREDITS_PER_USD    = 211.0  # Official as of Apr 2026
 
 # ---------------------------------------------------------------------------
 # Resolution → (width, height) lookup (used for Seedance 2.0 token formula)
@@ -404,65 +412,65 @@ def _calc_cost(
 # Balance check
 # ---------------------------------------------------------------------------
 
+_BALANCE_ENDPOINTS = (
+    "/api/credits",
+    "/internal/credits",
+    "/api/user/credits",
+    "/comfyui-credits",
+)
+_BALANCE_KEYS     = ("credits", "balance", "credit_balance", "amount", "comfy_credits")
+_BALANCE_WRAPPERS = ("data", "user", "account")
+
+
 def _get_balance(comfyui_url: str = "http://127.0.0.1:8188") -> float | None:
     """
     Fetch the current Comfy Credits balance from the running ComfyUI instance.
-    Returns the balance as a float, or None if the call fails.
-    Logs debug information to the ComfyUI server console so you can trace failures.
+    Returns the balance as a float, or None if no endpoint responded.
+    Debug/warning info is logged via logging.getLogger("credit_tracker.nodes").
     """
-    import urllib.request, json as _json, logging as _log
-
     base = comfyui_url.rstrip("/")
-    endpoints = [
-        f"{base}/api/credits",
-        f"{base}/internal/credits",
-        f"{base}/api/user/credits",
-        f"{base}/comfyui-credits",
-    ]
-
-    for url in endpoints:
+    for path in _BALANCE_ENDPOINTS:
+        url = base + path
         try:
             req = urllib.request.Request(url, headers={"Accept": "application/json"})
             with urllib.request.urlopen(req, timeout=3) as resp:
-                status = resp.status
-                raw    = resp.read().decode()
-                _log.debug("[credit_tracker] %s → %s  body: %s", url, status, raw[:200])
-
-                # Handle raw number response
-                try:
-                    return float(raw)
-                except ValueError:
-                    pass
-
-                data = _json.loads(raw)
-
-                # Flat key search
-                for key in ("credits", "balance", "credit_balance", "amount", "comfy_credits"):
-                    if key in data:
-                        return float(data[key])
-
-                # Nested under "data" or "user"
-                for wrapper in ("data", "user", "account"):
-                    nested = data.get(wrapper, {})
-                    if isinstance(nested, dict):
-                        for key in ("credits", "balance", "credit_balance", "amount"):
-                            if key in nested:
-                                return float(nested[key])
-
-                _log.warning(
-                    "[credit_tracker] /api/credits responded but no recognised key. "
-                    "Full response: %s — please open a GitHub issue on Av007/custom_fns.",
-                    raw[:500],
-                )
-                return None  # Endpoint found but format unknown; stop trying others
-
+                raw = resp.read().decode()
         except urllib.error.HTTPError as e:
-            _log.debug("[credit_tracker] %s → HTTP %s %s", url, e.code, e.reason)
+            log.debug("%s → HTTP %s %s", url, e.code, e.reason)
+            continue
         except Exception as e:
-            _log.debug("[credit_tracker] %s → %s: %s", url, type(e).__name__, e)
+            log.debug("%s → %s: %s", url, type(e).__name__, e)
+            continue
 
-    _log.warning(
-        "[credit_tracker] Could not reach any credits endpoint at %s. "
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+
+        for key in _BALANCE_KEYS:
+            if key in data:
+                return float(data[key])
+        for wrapper in _BALANCE_WRAPPERS:
+            nested = data.get(wrapper) if isinstance(data, dict) else None
+            if isinstance(nested, dict):
+                for key in _BALANCE_KEYS:
+                    if key in nested:
+                        return float(nested[key])
+
+        log.warning(
+            "%s responded but no recognised key. Body: %s — please open a "
+            "GitHub issue on Av007/custom_fns.",
+            url, raw[:500],
+        )
+        return None
+
+    log.warning(
+        "Could not reach any credits endpoint at %s. "
         "Check that you are logged in to ComfyUI (Settings → Account).",
         base,
     )
@@ -558,10 +566,11 @@ class CreditDisplay:
         b = _calc_cost(model, resolution, aspect_ratio, duration_s, runs)
         if "error" in b:
             text = f"ERROR: {b['error']}"
+            # RETURN_TYPES has 4 slots; pad with zeros for invalid config.
             return {"ui": {"text": [text]}, "result": (text, 0.0, 0.0, 0.0)}
 
         balance = _get_balance() if check_balance else None
-        total   = b["total_credits"]
+        total: float = b["total_credits"]
 
         if block_if_insufficient and balance is not None and balance < total:
             shortfall = total - balance

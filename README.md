@@ -23,26 +23,40 @@ No `pip install` is required — the package uses Python stdlib only.
 
 ## Nodes
 
-### `credit_tracker` — Pre-flight cost estimator
+### `credit_tracker` — Pre-flight cost estimator with live balance check
 
-Shows the estimated **Comfy Credits** (and USD equivalent) for a Partner Node generation *before* you queue it. Wire the output into a `ShowText|pysssss` node to display the cost inline on the canvas.
+Shows estimated **Comfy Credits** (and USD equivalent) for a Partner Node generation *before* you queue it, fetches your live balance, and can optionally **block the run** if funds are insufficient.
 
-> ComfyUI already tracks *actual* spend per generation in **Settings → Credits**. This node gives you an estimate *before* queuing so you can catch expensive configurations early.
+> ComfyUI tracks *actual* spend in **Settings → Credits**. This node estimates *before* queuing so you catch expensive configurations early.
 
 #### ComfyUI nodes registered
 
 | Node | Category | Use |
 |---|---|---|
-| `Credit Display` | `utils/cost` | Dropdown pickers for model, resolution, aspect ratio, duration, runs |
+| `Credit Display` | `utils/cost` | Dropdown pickers for model, resolution, aspect ratio, duration, runs + balance check + optional queue block |
 | `Credit Display (from strings)` | `utils/cost` | Same calculation but accepts raw STRING inputs — pipe values from other nodes |
 
-Both nodes output:
+#### Outputs
 
 | Output | Type | Description |
 |---|---|---|
 | `cost_text` | STRING | Formatted multi-line summary → wire to `ShowText\|pysssss` |
 | `total_credits` | FLOAT | Total Comfy Credits |
 | `total_usd` | FLOAT | USD equivalent (`total_credits ÷ 211`) |
+| `balance_after` | FLOAT | Remaining balance after this run (−1.0 if balance check disabled or failed; only on `Credit Display`) |
+
+#### Optional inputs (wired)
+
+| Input | Purpose |
+|---|---|
+| `trigger` (`*`) | Any upstream output (IMAGE, VIDEO, STRING…); enforces execution order so cost recalculates after the real node runs |
+| `aspect_ratio_in` | Wire a `PrimitiveNode` to share aspect ratio with an upstream video node |
+| `resolution_in` | Same, for resolution |
+
+#### Widgets
+
+- `check_balance` — fetch live balance from ComfyUI's local API (`/api/credits`, `/internal/credits`, etc.). Falls back gracefully when not logged in.
+- `block_if_insufficient` — when ON and balance < cost, raises a `RuntimeError` **before** the paid node runs so no credits are spent on a failed queue.
 
 #### Connecting to ShowText
 
@@ -52,17 +66,20 @@ Both nodes output:
 
 Requires [pythongosssss/ComfyUI-Custom-Scripts](https://github.com/pythongosssss/ComfyUI-Custom-Scripts) for `ShowText|pysssss`.
 
-#### Example output (Seedance 2.0 Fast, 480p 16:9, 5 s)
+#### Example output (Seedance 2.0 Fast, 480p 16:9, 5 s, balance ON)
 
 ```
 Model     : Seedance 2.0 Fast — image/text→video (ByteDance)
 Settings  : 480p 16:9  854×480  5.0s  ×1 run(s)
 Per run   : 56.78 cr  ($0.2691)
 Total     : 56.78 cr  ($0.2691)
+Balance   : 1024.00 cr  ($4.8530)
+After run : 967.22 cr  ($4.5839)
+Status    : OK
 Rate      : 211 cr = $1 USD  |  https://docs.comfy.org/tutorials/partner-nodes/pricing
 ```
 
-#### Supported models (41 total)
+#### Supported models
 
 Pricing source: <https://docs.comfy.org/tutorials/partner-nodes/pricing>  
 Conversion: **211 Comfy Credits = 1 USD**
@@ -167,7 +184,8 @@ Conversion: **211 Comfy Credits = 1 USD**
 
 ## Updating prices
 
-All rates live in the `PRICING` dict at the top of `custom_nodes/credit_tracker/nodes.py`. When ComfyUI updates its official pricing page, edit the relevant `credits_per_*` value and restart ComfyUI — no other changes needed.
+All rates live in the `PRICING` dict in `custom_nodes/credit_tracker/nodes.py`.
+The live-display JavaScript mirror lives in `custom_nodes/credit_tracker/js/credit_display.js` — when you change `PRICING`, update the matching entry in the JS `PRICING` object too, then restart ComfyUI.
 
 Official source: <https://docs.comfy.org/tutorials/partner-nodes/pricing>
 
@@ -176,20 +194,23 @@ Official source: <https://docs.comfy.org/tutorials/partner-nodes/pricing>
 ## File structure
 
 ```
-custom_fns/                          ← repo root (cloned into ComfyUI/custom_nodes/)
-├── __init__.py                      # ComfyUI entry point — loaded automatically
-├── pyproject.toml                   # pip install support
+custom_fns/                            ← repo root (cloned into ComfyUI/custom_nodes/)
+├── __init__.py                        # ComfyUI entry point (exposes mappings + WEB_DIRECTORY)
+├── pyproject.toml
 ├── .gitignore
 ├── README.md
+├── CONFLUENCE.md
 └── custom_nodes/
     └── credit_tracker/
-        ├── __init__.py              # registers NODE_CLASS_MAPPINGS
-        └── nodes.py                 # pricing table, token formulas, node classes
+        ├── __init__.py                # registers nodes for direct install
+        ├── nodes.py                   # pricing, token formulas, node classes
+        └── js/
+            └── credit_display.js      # live client-side recalculation
 ```
 
 ## Portability
 
-The package has **no external dependencies** (pure Python stdlib). To deploy to another ComfyUI instance:
+Pure Python stdlib — no external dependencies. To deploy to another ComfyUI instance:
 
 ```bash
 # Option A — git clone directly into custom_nodes/
@@ -199,8 +220,8 @@ git clone https://github.com/Av007/custom_fns.git custom_fns
 # Option B — ComfyUI Manager → Install via Git URL
 # paste: https://github.com/Av007/custom_fns
 
-# Option C — rsync (if you have a local copy)
+# Option C — rsync (from a local copy)
 rsync -avz /local/path/custom_fns/ user@remote:/path/to/ComfyUI/custom_nodes/custom_fns/
 ```
 
-The workflow JSON (`projects/seedance.json`) references the node by `type: "CreditDisplay"` which matches the key in `NODE_CLASS_MAPPINGS`. As long as the package is installed, the workflow loads cleanly on any ComfyUI instance.
+Workflow JSONs reference the node by `type: "CreditDisplay"` which matches the key in `NODE_CLASS_MAPPINGS`; as long as the package is installed, any workflow loads cleanly.
