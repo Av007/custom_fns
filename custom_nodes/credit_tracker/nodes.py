@@ -531,7 +531,10 @@ class CreditDisplay:
             "optional": {
                 # Accept any upstream output (IMAGE, VIDEO, STRING …) to
                 # create a dependency edge without constraining the type.
-                "trigger": ("*", {"forceInput": True}),
+                "trigger":          ("*",               {"forceInput": True}),
+                # Wire a PrimitiveNode here to share aspect_ratio with ByteDance.
+                "aspect_ratio_in":  (_ALL_ASPECT_RATIOS, {"forceInput": True}),
+                "resolution_in":    (_ALL_RESOLUTIONS,   {"forceInput": True}),
             },
         }
 
@@ -545,7 +548,13 @@ class CreditDisplay:
         check_balance: bool = True,
         block_if_insufficient: bool = False,
         trigger=None,
+        aspect_ratio_in: str | None = None,
+        resolution_in:   str | None = None,
     ):
+        if aspect_ratio_in:
+            aspect_ratio = aspect_ratio_in
+        if resolution_in:
+            resolution = resolution_in
         b = _calc_cost(model, resolution, aspect_ratio, duration_s, runs)
         if "error" in b:
             text = f"ERROR: {b['error']}"
