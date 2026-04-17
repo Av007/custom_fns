@@ -407,26 +407,65 @@ def _calc_cost(
 def _get_balance(comfyui_url: str = "http://127.0.0.1:8188") -> float | None:
     """
     Fetch the current Comfy Credits balance from the running ComfyUI instance.
-    Returns the balance as a float, or None if the call fails (not logged in,
-    wrong URL, network error, etc.).
-    Tries the two known endpoint shapes in order.
+    Returns the balance as a float, or None if the call fails.
+    Logs debug information to the ComfyUI server console so you can trace failures.
     """
-    import urllib.request, json as _json
+    import urllib.request, json as _json, logging as _log
 
+    base = comfyui_url.rstrip("/")
     endpoints = [
-        f"{comfyui_url.rstrip('/')}/api/credits",
-        f"{comfyui_url.rstrip('/')}/internal/credits",
+        f"{base}/api/credits",
+        f"{base}/internal/credits",
+        f"{base}/api/user/credits",
+        f"{base}/comfyui-credits",
     ]
+
     for url in endpoints:
         try:
-            with urllib.request.urlopen(url, timeout=3) as resp:
-                data = _json.loads(resp.read())
-                # Response shapes vary — try common key names
-                for key in ("credits", "balance", "credit_balance", "amount"):
+            req = urllib.request.Request(url, headers={"Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                status = resp.status
+                raw    = resp.read().decode()
+                _log.debug("[credit_tracker] %s → %s  body: %s", url, status, raw[:200])
+
+                # Handle raw number response
+                try:
+                    return float(raw)
+                except ValueError:
+                    pass
+
+                data = _json.loads(raw)
+
+                # Flat key search
+                for key in ("credits", "balance", "credit_balance", "amount", "comfy_credits"):
                     if key in data:
                         return float(data[key])
-        except Exception:
-            continue
+
+                # Nested under "data" or "user"
+                for wrapper in ("data", "user", "account"):
+                    nested = data.get(wrapper, {})
+                    if isinstance(nested, dict):
+                        for key in ("credits", "balance", "credit_balance", "amount"):
+                            if key in nested:
+                                return float(nested[key])
+
+                _log.warning(
+                    "[credit_tracker] /api/credits responded but no recognised key. "
+                    "Full response: %s — please open a GitHub issue on Av007/custom_fns.",
+                    raw[:500],
+                )
+                return None  # Endpoint found but format unknown; stop trying others
+
+        except urllib.error.HTTPError as e:
+            _log.debug("[credit_tracker] %s → HTTP %s %s", url, e.code, e.reason)
+        except Exception as e:
+            _log.debug("[credit_tracker] %s → %s: %s", url, type(e).__name__, e)
+
+    _log.warning(
+        "[credit_tracker] Could not reach any credits endpoint at %s. "
+        "Check that you are logged in to ComfyUI (Settings → Account).",
+        base,
+    )
     return None
 
 
@@ -451,7 +490,9 @@ def _format_output(b: dict, balance: float | None = None, block: bool = False) -
             f"Status    : {status}{'  — run blocked' if status == 'INSUFFICIENT' and block else ''}",
         ]
     else:
-        lines.append("Balance   : — (log in to ComfyUI to enable balance check)")
+        lines.append(
+            "Balance   : — (could not fetch; check server console for [credit_tracker] lines)"
+        )
 
     lines.append(f"Rate      : 211 cr = $1 USD  |  {PRICING_SOURCE_URL}")
     return "\n".join(lines)
