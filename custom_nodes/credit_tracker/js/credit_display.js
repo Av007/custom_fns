@@ -150,7 +150,52 @@ app.registerExtension({
         return self.widgets?.find((w) => w.name === name);
       }
 
+      /**
+       * Try to read a setting from the node connected to our "trigger" input.
+       * Falls back to undefined if nothing is wired or the widget isn't found.
+       * Uses widget.name for lookup, then positional index as a fallback
+       * (ByteDance widget order: 0=model, 1=prompt, 2=resolution, 3=aspect_ratio,
+       *  4=duration, …).
+       */
+      const UPSTREAM_IDX = { resolution: 2, aspect_ratio: 3, duration_s: 4 };
+
+      function getUpstreamWidget(settingName) {
+        const triggerInput = self.inputs?.find((i) => i.name === "trigger");
+        if (!triggerInput?.link) return undefined;
+
+        const link = app.graph.links[triggerInput.link];
+        if (!link) return undefined;
+
+        const srcNode = app.graph.getNodeById(link.origin_id);
+        if (!srcNode) return undefined;
+
+        // Prefer exact name match, fall back to known positional index
+        return (
+          srcNode.widgets?.find((w) => w.name === settingName) ??
+          srcNode.widgets?.[UPSTREAM_IDX[settingName]]
+        );
+      }
+
+      /** Mirror a value from upstream into a local widget (if it differs). */
+      function syncFromUpstream(localName) {
+        const up  = getUpstreamWidget(localName);
+        const own = getWidget(localName);
+        if (!up || !own) return;
+        const parsed = localName === "duration_s"
+          ? parseFloat(up.value)
+          : String(up.value);
+        if (own.value !== parsed) {
+          own.value = parsed;
+        }
+      }
+
       function refresh() {
+        // Pull resolution / aspect_ratio / duration_s from the upstream node
+        // (ByteDance or any other node wired to "trigger") when available.
+        syncFromUpstream("resolution");
+        syncFromUpstream("aspect_ratio");
+        syncFromUpstream("duration_s");
+
         const model        = getWidget("model")?.value;
         const resolution   = getWidget("resolution")?.value;
         const aspectRatio  = getWidget("aspect_ratio")?.value;
@@ -172,7 +217,8 @@ app.registerExtension({
         }
       }
 
-      // Attach live listener to every widget
+      // Attach live listener to every widget on this node AND re-run refresh
+      // whenever any widget on the upstream (trigger-source) node changes.
       const patchCallback = (widget) => {
         const orig = widget.callback;
         widget.callback = function (...args) {
@@ -184,6 +230,25 @@ app.registerExtension({
       for (const w of this.widgets ?? []) {
         patchCallback(w);
       }
+
+      // Also watch for connection changes so that wiring / unwiring trigger
+      // triggers an immediate sync.
+      const origConnected    = self.onConnectionsChange;
+      self.onConnectionsChange = function (...args) {
+        origConnected?.apply(this, args);
+        // Patch upstream widgets after a connection is made
+        queueMicrotask(() => {
+          const triggerInput = self.inputs?.find((i) => i.name === "trigger");
+          if (!triggerInput?.link) return;
+          const link    = app.graph.links[triggerInput.link];
+          const srcNode = link && app.graph.getNodeById(link.origin_id);
+          if (!srcNode) return;
+          for (const w of srcNode.widgets ?? []) {
+            patchCallback(w);
+          }
+          refresh();
+        });
+      };
 
       // Initial render after the node fully initialises
       queueMicrotask(refresh);
