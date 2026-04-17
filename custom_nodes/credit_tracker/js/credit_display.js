@@ -181,27 +181,43 @@ app.registerExtension({
         if (own.value !== val) own.value = val;
       }
 
-      // ── Widget callback patching ───────────────────────────────────────────
-      const patchWidget = (w) => {
-        const orig = w.callback;
-        w.callback = function (...args) {
-          orig?.apply(this, args);
-          refresh();
-        };
-      };
+      // ── Widget value interception ─────────────────────────────────────────
+      // ComfyUI combo/dropdown widgets bypass `widget.callback` in many cases
+      // and write directly to `widget.value`. We intercept the setter so any
+      // write — through the UI, serialisation, or other extensions — triggers
+      // an immediate recalculation.
+      function interceptWidget(w) {
+        if (w._ctIntercepted) return;  // already done
+        w._ctIntercepted = true;
 
-      /** Patch every widget on the source node (once). */
+        let _v = w.value;
+        Object.defineProperty(w, "value", {
+          configurable: true,
+          enumerable:   true,
+          get() { return _v; },
+          set(next) {
+            if (next !== _v) {
+              _v = next;
+              // Defer by one tick so LiteGraph finishes its own bookkeeping first
+              queueMicrotask(refresh);
+            } else {
+              _v = next;
+            }
+          },
+        });
+      }
+
+      /** Intercept every widget on the source node (once per node). */
       function patchSourceNode() {
         const src = getSourceNode();
         if (!src || _patched.has(src)) return;
-        for (const w of src.widgets ?? []) patchWidget(w);
+        for (const w of src.widgets ?? []) interceptWidget(w);
         _patched.add(src);
       }
 
       // ── Core refresh ──────────────────────────────────────────────────────
       function refresh() {
-        // Lazily patch source node callbacks so any widget change there
-        // triggers a recalculation here (handles both on-load and new wires).
+        // Lazily intercept source node widgets (handles on-load + new wires).
         patchSourceNode();
 
         syncFromUpstream("resolution");
@@ -228,19 +244,18 @@ app.registerExtension({
         }
       }
 
-      // Patch our own widgets so any local change recalculates immediately.
-      for (const w of this.widgets ?? []) patchWidget(w);
+      // Intercept our own widgets for local changes.
+      for (const w of this.widgets ?? []) interceptWidget(w);
 
-      // Re-patch (and re-sync) whenever a connection is added or removed.
+      // Re-sync whenever a connection is added or removed.
       const origConnChanged = self.onConnectionsChange;
       self.onConnectionsChange = function (...args) {
         origConnChanged?.apply(this, args);
         queueMicrotask(refresh);
       };
 
-      // Initial render — microtask for immediate paint,
-      // setTimeout for the case where the workflow is loaded with existing links
-      // (graph connections are fully resolved after a short delay).
+      // Initial render: microtask = immediate paint;
+      // setTimeout = after workflow graph is fully loaded (connections resolved).
       queueMicrotask(refresh);
       setTimeout(refresh, 500);
     };
