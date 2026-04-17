@@ -111,16 +111,23 @@ function calcCost(model, resolution, aspectRatio, durationS, runs) {
   return { unitCredits, totalCredits, totalUsd, w, h, label: entry.label, vendor: entry.vendor };
 }
 
-function formatText(model, resolution, aspectRatio, durationS, runs) {
+function formatText(model, resolution, aspectRatio, durationS, runs, checkBalance) {
   const r = calcCost(model, resolution, aspectRatio, durationS, runs);
   if (!r) return `Unknown model: ${model}`;
-  return [
+  const lines = [
     `Model     : ${r.label} (${r.vendor})`,
     `Settings  : ${resolution} ${aspectRatio}  ${r.w}×${r.h}  ${durationS}s  ×${runs} run(s)`,
     `Per run   : ${r.unitCredits.toFixed(2)} cr  ($${(r.unitCredits / CREDITS_PER_USD).toFixed(4)})`,
     `Total     : ${r.totalCredits.toFixed(2)} cr  ($${r.totalUsd.toFixed(4)})`,
-    `Rate      : 211 cr = $1 USD  |  ${PRICING_URL}`,
-  ].join("\n");
+  ];
+  // Balance is fetched server-side at queue time; show a placeholder here.
+  lines.push(
+    checkBalance
+      ? "Balance   : — (will be fetched when queued)"
+      : "Balance   : — (check_balance is off)"
+  );
+  lines.push(`Rate      : 211 cr = $1 USD  |  ${PRICING_URL}`);
+  return lines.join("\n");
 }
 
 // ── ComfyUI Extension ────────────────────────────────────────────────────────
@@ -144,15 +151,16 @@ app.registerExtension({
       }
 
       function refresh() {
-        const model      = getWidget("model")?.value;
-        const resolution = getWidget("resolution")?.value;
-        const aspectRatio = getWidget("aspect_ratio")?.value;
-        const durationS  = parseFloat(getWidget("duration_s")?.value ?? 5);
-        const runs       = parseInt(getWidget("runs")?.value ?? 1, 10);
+        const model        = getWidget("model")?.value;
+        const resolution   = getWidget("resolution")?.value;
+        const aspectRatio  = getWidget("aspect_ratio")?.value;
+        const durationS    = parseFloat(getWidget("duration_s")?.value ?? 5);
+        const runs         = parseInt(getWidget("runs")?.value ?? 1, 10);
+        const checkBalance = getWidget("check_balance")?.value ?? true;
 
         if (!model || !resolution || !aspectRatio) return;
 
-        const text = formatText(model, resolution, aspectRatio, durationS, runs);
+        const text = formatText(model, resolution, aspectRatio, durationS, runs, checkBalance);
 
         // Write into the node's output text widget (created by OUTPUT_NODE)
         const textWidget = self.widgets?.find(

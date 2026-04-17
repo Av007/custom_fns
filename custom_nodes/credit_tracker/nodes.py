@@ -400,17 +400,60 @@ def _calc_cost(
     }
 
 
-def _format_output(b: dict) -> str:
+# ---------------------------------------------------------------------------
+# Balance check
+# ---------------------------------------------------------------------------
+
+def _get_balance(comfyui_url: str = "http://127.0.0.1:8188") -> float | None:
+    """
+    Fetch the current Comfy Credits balance from the running ComfyUI instance.
+    Returns the balance as a float, or None if the call fails (not logged in,
+    wrong URL, network error, etc.).
+    Tries the two known endpoint shapes in order.
+    """
+    import urllib.request, json as _json
+
+    endpoints = [
+        f"{comfyui_url.rstrip('/')}/api/credits",
+        f"{comfyui_url.rstrip('/')}/internal/credits",
+    ]
+    for url in endpoints:
+        try:
+            with urllib.request.urlopen(url, timeout=3) as resp:
+                data = _json.loads(resp.read())
+                # Response shapes vary — try common key names
+                for key in ("credits", "balance", "credit_balance", "amount"):
+                    if key in data:
+                        return float(data[key])
+        except Exception:
+            continue
+    return None
+
+
+def _format_output(b: dict, balance: float | None = None, block: bool = False) -> str:
     if "error" in b:
         return f"ERROR: {b['error']}"
 
+    total = b["total_credits"]
     lines = [
         f"Model     : {b['model']} ({b['vendor']})",
         f"Settings  : {b['resolution']} {b['aspect_ratio']}  {b['dimensions']}  {b['duration_s']}s  ×{b['runs']} run(s)",
         f"Per run   : {b['unit_credits']:.2f} cr  (${b['unit_credits'] / CREDITS_PER_USD:.4f})",
-        f"Total     : {b['total_credits']:.2f} cr  (${b['total_usd']:.4f})",
-        f"Rate      : 211 cr = $1 USD  |  {PRICING_SOURCE_URL}",
+        f"Total     : {total:.2f} cr  (${b['total_usd']:.4f})",
     ]
+
+    if balance is not None:
+        after   = balance - total
+        status  = "OK" if after >= 0 else "INSUFFICIENT"
+        lines += [
+            f"Balance   : {balance:.2f} cr  (${balance / CREDITS_PER_USD:.4f})",
+            f"After run : {after:.2f} cr  (${after / CREDITS_PER_USD:.4f})",
+            f"Status    : {status}{'  — run blocked' if status == 'INSUFFICIENT' and block else ''}",
+        ]
+    else:
+        lines.append("Balance   : — (log in to ComfyUI to enable balance check)")
+
+    lines.append(f"Rate      : 211 cr = $1 USD  |  {PRICING_SOURCE_URL}")
     return "\n".join(lines)
 
 
@@ -420,29 +463,31 @@ def _format_output(b: dict) -> str:
 
 class CreditDisplay:
     """
-    Estimate Comfy Credits spent for a Partner Node generation.
+    Estimate Comfy Credits for a Partner Node generation.
+    Optionally fetches the live account balance and blocks the run
+    if funds are insufficient.
     Wire cost_text → ShowText|pysssss to display inline on the canvas.
-    Actual charges are tracked in Settings → Credits after execution.
     """
 
     CATEGORY = "utils/cost"
     FUNCTION = "calculate"
-    RETURN_TYPES = ("STRING", "FLOAT", "FLOAT")
-    RETURN_NAMES = ("cost_text", "total_credits", "total_usd")
+    RETURN_TYPES = ("STRING", "FLOAT", "FLOAT", "FLOAT")
+    RETURN_NAMES = ("cost_text", "total_credits", "total_usd", "balance_after")
     OUTPUT_NODE = True
 
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "model":        (_MODEL_KEYS, {"default": "Seedance 2.0 Fast (i2v/t2v)"}),
-                "resolution":   (_ALL_RESOLUTIONS, {"default": "480p"}),
-                "aspect_ratio": (_ALL_ASPECT_RATIOS, {"default": "16:9"}),
-                "duration_s":   ("FLOAT", {"default": 5.0, "min": 1.0, "max": 120.0, "step": 0.5}),
-                "runs":         ("INT",   {"default": 1, "min": 1, "max": 100, "step": 1}),
+                "model":                (_MODEL_KEYS,       {"default": "Seedance 2.0 Fast (i2v/t2v)"}),
+                "resolution":           (_ALL_RESOLUTIONS,  {"default": "480p"}),
+                "aspect_ratio":         (_ALL_ASPECT_RATIOS, {"default": "16:9"}),
+                "duration_s":           ("FLOAT",  {"default": 5.0, "min": 1.0, "max": 120.0, "step": 0.5}),
+                "runs":                 ("INT",    {"default": 1, "min": 1, "max": 100, "step": 1}),
+                "check_balance":        ("BOOLEAN", {"default": True,  "label_on": "check balance", "label_off": "skip balance"}),
+                "block_if_insufficient":("BOOLEAN", {"default": False, "label_on": "block run", "label_off": "warn only"}),
             },
             "optional": {
-                # Wire any upstream value here to force recalc when params change.
                 "trigger": ("STRING", {"forceInput": True}),
             },
         }
@@ -454,13 +499,33 @@ class CreditDisplay:
         aspect_ratio: str,
         duration_s: float,
         runs: int,
+        check_balance: bool = True,
+        block_if_insufficient: bool = False,
         trigger: str = "",
     ):
         b = _calc_cost(model, resolution, aspect_ratio, duration_s, runs)
-        text = _format_output(b)
-        credits = float(b.get("total_credits", 0.0))
-        usd = float(b.get("total_usd", 0.0))
-        return {"ui": {"text": [text]}, "result": (text, credits, usd)}
+        if "error" in b:
+            text = f"ERROR: {b['error']}"
+            return {"ui": {"text": [text]}, "result": (text, 0.0, 0.0, 0.0)}
+
+        balance = _get_balance() if check_balance else None
+        total   = b["total_credits"]
+
+        if block_if_insufficient and balance is not None and balance < total:
+            shortfall = total - balance
+            raise RuntimeError(
+                f"Insufficient Comfy Credits — need {total:.2f} cr, "
+                f"have {balance:.2f} cr (short by {shortfall:.2f} cr / "
+                f"${shortfall / CREDITS_PER_USD:.4f}). "
+                f"Top up at Settings → Credits."
+            )
+
+        text         = _format_output(b, balance, block_if_insufficient)
+        after_balance = (balance - total) if balance is not None else -1.0
+        return {
+            "ui": {"text": [text]},
+            "result": (text, float(total), float(b["total_usd"]), float(after_balance)),
+        }
 
 
 # ---------------------------------------------------------------------------
