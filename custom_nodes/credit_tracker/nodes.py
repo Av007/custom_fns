@@ -488,7 +488,9 @@ class CreditDisplay:
                 "block_if_insufficient":("BOOLEAN", {"default": False, "label_on": "block run", "label_off": "warn only"}),
             },
             "optional": {
-                "trigger": ("STRING", {"forceInput": True}),
+                # Accept any upstream output (IMAGE, VIDEO, STRING …) to
+                # create a dependency edge without constraining the type.
+                "trigger": ("*", {"forceInput": True}),
             },
         }
 
@@ -501,7 +503,7 @@ class CreditDisplay:
         runs: int,
         check_balance: bool = True,
         block_if_insufficient: bool = False,
-        trigger: str = "",
+        trigger=None,
     ):
         b = _calc_cost(model, resolution, aspect_ratio, duration_s, runs)
         if "error" in b:
