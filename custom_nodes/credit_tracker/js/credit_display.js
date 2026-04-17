@@ -150,48 +150,60 @@ app.registerExtension({
         return self.widgets?.find((w) => w.name === name);
       }
 
-      /**
-       * Try to read a setting from the node connected to our "trigger" input.
-       * Falls back to undefined if nothing is wired or the widget isn't found.
-       * Uses widget.name for lookup, then positional index as a fallback
-       * (ByteDance widget order: 0=model, 1=prompt, 2=resolution, 3=aspect_ratio,
-       *  4=duration, …).
-       */
+      // ── Upstream sync ──────────────────────────────────────────────────────
+      // ByteDance widget order: 0=model 1=prompt 2=resolution 3=aspect_ratio 4=duration
       const UPSTREAM_IDX = { resolution: 2, aspect_ratio: 3, duration_s: 4 };
 
-      function getUpstreamWidget(settingName) {
-        const triggerInput = self.inputs?.find((i) => i.name === "trigger");
-        if (!triggerInput?.link) return undefined;
+      // Track which source nodes have already been patched so we don't double-wrap.
+      const _patched = new WeakSet();
 
-        const link = app.graph.links[triggerInput.link];
-        if (!link) return undefined;
-
-        const srcNode = app.graph.getNodeById(link.origin_id);
-        if (!srcNode) return undefined;
-
-        // Prefer exact name match, fall back to known positional index
-        return (
-          srcNode.widgets?.find((w) => w.name === settingName) ??
-          srcNode.widgets?.[UPSTREAM_IDX[settingName]]
-        );
+      /** Return the node wired to our "trigger" input, or null. */
+      function getSourceNode() {
+        const inp  = self.inputs?.find((i) => i.name === "trigger");
+        if (!inp?.link) return null;
+        const link = app.graph.links[inp.link];
+        return link ? app.graph.getNodeById(link.origin_id) : null;
       }
 
-      /** Mirror a value from upstream into a local widget (if it differs). */
-      function syncFromUpstream(localName) {
-        const up  = getUpstreamWidget(localName);
-        const own = getWidget(localName);
+      /** Return the widget named `name` from the source node (name-first, then index). */
+      function getUpstreamWidget(name) {
+        const src = getSourceNode();
+        if (!src) return undefined;
+        return src.widgets?.find((w) => w.name === name) ?? src.widgets?.[UPSTREAM_IDX[name]];
+      }
+
+      /** Copy a value from the source node into our own widget. */
+      function syncFromUpstream(name) {
+        const up  = getUpstreamWidget(name);
+        const own = getWidget(name);
         if (!up || !own) return;
-        const parsed = localName === "duration_s"
-          ? parseFloat(up.value)
-          : String(up.value);
-        if (own.value !== parsed) {
-          own.value = parsed;
-        }
+        const val = name === "duration_s" ? parseFloat(up.value) : String(up.value);
+        if (own.value !== val) own.value = val;
       }
 
+      // ── Widget callback patching ───────────────────────────────────────────
+      const patchWidget = (w) => {
+        const orig = w.callback;
+        w.callback = function (...args) {
+          orig?.apply(this, args);
+          refresh();
+        };
+      };
+
+      /** Patch every widget on the source node (once). */
+      function patchSourceNode() {
+        const src = getSourceNode();
+        if (!src || _patched.has(src)) return;
+        for (const w of src.widgets ?? []) patchWidget(w);
+        _patched.add(src);
+      }
+
+      // ── Core refresh ──────────────────────────────────────────────────────
       function refresh() {
-        // Pull resolution / aspect_ratio / duration_s from the upstream node
-        // (ByteDance or any other node wired to "trigger") when available.
+        // Lazily patch source node callbacks so any widget change there
+        // triggers a recalculation here (handles both on-load and new wires).
+        patchSourceNode();
+
         syncFromUpstream("resolution");
         syncFromUpstream("aspect_ratio");
         syncFromUpstream("duration_s");
@@ -207,7 +219,6 @@ app.registerExtension({
 
         const text = formatText(model, resolution, aspectRatio, durationS, runs, checkBalance);
 
-        // Write into the node's output text widget (created by OUTPUT_NODE)
         const textWidget = self.widgets?.find(
           (w) => w.type === "customtext" || w.name === "text"
         );
@@ -217,41 +228,21 @@ app.registerExtension({
         }
       }
 
-      // Attach live listener to every widget on this node AND re-run refresh
-      // whenever any widget on the upstream (trigger-source) node changes.
-      const patchCallback = (widget) => {
-        const orig = widget.callback;
-        widget.callback = function (...args) {
-          orig?.apply(this, args);
-          refresh();
-        };
-      };
+      // Patch our own widgets so any local change recalculates immediately.
+      for (const w of this.widgets ?? []) patchWidget(w);
 
-      for (const w of this.widgets ?? []) {
-        patchCallback(w);
-      }
-
-      // Also watch for connection changes so that wiring / unwiring trigger
-      // triggers an immediate sync.
-      const origConnected    = self.onConnectionsChange;
+      // Re-patch (and re-sync) whenever a connection is added or removed.
+      const origConnChanged = self.onConnectionsChange;
       self.onConnectionsChange = function (...args) {
-        origConnected?.apply(this, args);
-        // Patch upstream widgets after a connection is made
-        queueMicrotask(() => {
-          const triggerInput = self.inputs?.find((i) => i.name === "trigger");
-          if (!triggerInput?.link) return;
-          const link    = app.graph.links[triggerInput.link];
-          const srcNode = link && app.graph.getNodeById(link.origin_id);
-          if (!srcNode) return;
-          for (const w of srcNode.widgets ?? []) {
-            patchCallback(w);
-          }
-          refresh();
-        });
+        origConnChanged?.apply(this, args);
+        queueMicrotask(refresh);
       };
 
-      // Initial render after the node fully initialises
+      // Initial render — microtask for immediate paint,
+      // setTimeout for the case where the workflow is loaded with existing links
+      // (graph connections are fully resolved after a short delay).
       queueMicrotask(refresh);
+      setTimeout(refresh, 500);
     };
   },
 });
